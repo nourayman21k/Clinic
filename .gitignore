@@ -1,0 +1,39 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Databases (real patient data)
+*.db
+*.sqlite
+
+# Superseded notebook backup — contained real patient conversation data
+# (phone numbers) embedded in cell outputs; agent_Start.ipynb is the
+# maintained reference copy (outputs stripped before commit).
+agent_Start.sqlite-backup.ipynb
+
+# Uploaded patient files (receipts, etc.)
+app/uploads/
+
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Third-party binaries — download separately, don't version
+ngrok.exe
+
+# Node
+node_modules/
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store

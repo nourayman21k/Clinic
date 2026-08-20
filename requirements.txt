@@ -1,0 +1,50 @@
+# --- Core LangChain / LangGraph ---
+langchain
+langchain-core
+langchain-community
+langchain-text-splitters
+langgraph
+
+# --- LLM providers (pick what you actually use; keeping both is harmless) ---
+langchain-openai      # ChatOpenAI, OpenAIEmbeddings
+langchain-groq        # ChatGroq (gemma2-9b-it in 2-querydecomposition.ipynb)
+
+# --- Embeddings ---
+langchain-huggingface # HuggingFaceEmbeddings("all-MiniLM-L6-v2") - free, no API key
+sentence-transformers # backend for HuggingFaceEmbeddings
+
+# --- Vector store ---
+faiss-cpu
+
+# --- Tool sources (data sources for your agent) ---
+wikipedia             # backs WikipediaAPIWrapper / WikipediaQueryRun
+arxiv                 # backs ArxivAPIWrapper / ArxivQueryRun / ArxivLoader
+tavily-python         # backs TavilySearchResults (needs TAVILY_API_KEY)
+youtube-transcript-api # backs YoutubeLoader in 7-answersynthesis.ipynb
+
+# --- Document loading / parsing ---
+beautifulsoup4        # backs WebBaseLoader
+pypdf                 # in case you load PDFs into FAISS as internal docs
+
+# --- Config / env ---
+python-dotenv
+
+# --- Data / schema ---
+pydantic
+
+# --- Notebook environment ---
+jupyter
+ipywidgets
+
+# --- Optional: LangSmith tracing (mentioned as a stretch goal) ---
+langsmith
+
+
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+sqlalchemy==2.0.36
+psycopg2-binary==2.9.10
+python-dotenv==1.0.1
+passlib[bcrypt]==1.7.4
+python-jose[cryptography]==3.3.0
+python-multipart==0.0.20

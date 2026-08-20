@@ -1,0 +1,3 @@
+[submodule "OpenWA"]
+	path = OpenWA
+	url = https://github.com/nourayman21k/OpenWA.git
