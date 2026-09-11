@@ -413,9 +413,20 @@ def update_appointment_status(
 
     whatsapp_sent = None
     payment_created_id = None
+    payments_cancelled = 0
     if body.status == "no_show":
         whatsapp_sent = whatsapp.send_whatsapp_text(appt.patient, NO_SHOW_MESSAGE)
     elif body.status == "cancelled":
+        # Mirrors the WhatsApp agent's cancel_appointment: the visit isn't happening, so its
+        # uncollected charge must not stay in the pending list. Only 'pending' is voided --
+        # 'partial'/'paid' means money actually changed hands, which is a refund decision for
+        # staff rather than something to erase automatically.
+        payments_cancelled = (
+            db.query(Payment)
+            .filter(Payment.appointment_id == appt.id, Payment.status == "pending")
+            .update({"status": "cancelled"}, synchronize_session=False)
+        )
+        db.commit()
         whatsapp_sent = whatsapp.send_whatsapp_text(appt.patient, CANCELLED_MESSAGE)
     elif body.status == "done" and appt.appointment_type == "treatment" and appt.treatment_item_id:
         item = db.query(TreatmentItem).filter(TreatmentItem.id == appt.treatment_item_id).first()
@@ -450,6 +461,7 @@ def update_appointment_status(
         "status": appt.status,
         "whatsapp_sent": whatsapp_sent,
         "payment_created_id": payment_created_id,
+        "payments_cancelled": payments_cancelled,
         "message": f"Appointment {appt.id} marked as {appt.status}.",
     }
 

@@ -9,7 +9,8 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import Appointment, Doctor, Patient, Procedure, Payment, PatientProcedure, TreatmentItem, User
 from ..auth import require_doctor
-from .. import analytics, reports, voice_charge, voice_treatment_plan
+from ..config import CLINIC_NAME
+from .. import analytics, reports, voice_charge, voice_treatment_plan, whatsapp
 
 router = APIRouter(prefix="/api/doctor", tags=["doctor"])
 
@@ -169,6 +170,19 @@ def voice_charge_draft(
     audio_bytes = audio.file.read()
     if not audio_bytes:
         raise HTTPException(status_code=400, detail="Empty audio file.")
+
+    # TEMP DEBUG: dump the exact uploaded bytes so we can inspect what
+    # MediaRecorder actually produced (browser <audio> reports
+    # DEMUXER_ERROR_COULD_NOT_OPEN while Whisper transcribes it fine).
+    try:
+        import os as _os
+        import tempfile as _tf
+        _dbg = _os.path.join(_tf.gettempdir(), "clinic_voice_debug.webm")
+        with open(_dbg, "wb") as _f:
+            _f.write(audio_bytes)
+        print(f"[voice-charge DEBUG] wrote {len(audio_bytes)} bytes to {_dbg} first16={audio_bytes[:16].hex()}")
+    except Exception as _e:
+        print(f"[voice-charge DEBUG] dump failed: {_e}")
 
     try:
         transcript = voice_charge.transcribe_audio(audio_bytes, audio.filename or "audio.webm")
@@ -471,6 +485,13 @@ def post_charge(
     db.commit()
     db.refresh(payment)
 
+    procedure_names = ", ".join(dict.fromkeys(proc.name for proc, _, _ in line_items))  # de-duped, order-preserved
+    whatsapp_message = (
+        f"تم تسجيل {procedure_names} في {CLINIC_NAME}. المبلغ المطلوب {base_amount:g} جنيه — "
+        f"ممكن تدفعه في العيادة. شكراً ليك 🦷"
+    )
+    whatsapp_sent = whatsapp.send_whatsapp_text(patient, whatsapp_message)
+
     message = f"Charge posted for {patient.name}: {base_amount} EGP (pending)."
     if completed_treatment_item_ids:
         message += f" {len(completed_treatment_item_ids)} pending treatment item(s) marked completed."
@@ -481,5 +502,6 @@ def post_charge(
         "base_amount": float(payment.base_amount),
         "status": payment.status,
         "treatment_items_completed": completed_treatment_item_ids,
+        "whatsapp_sent": whatsapp_sent,
         "message": message,
     }

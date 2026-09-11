@@ -3,11 +3,11 @@ import re
 from typing import List, Optional
 
 from dotenv import load_dotenv
-from groq import Groq
 from langchain_groq import ChatGroq
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from langchain_huggingface import ChatHuggingFace
+
+from . import asr
 from .models import Patient, Procedure
 
 load_dotenv()
@@ -16,26 +16,9 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 if not GROQ_API_KEY:
     raise RuntimeError("GROQ_API_KEY not set — check your .env file")
 
-_groq_client = Groq(api_key=GROQ_API_KEY)
 _llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0, api_key=GROQ_API_KEY)
 
 MIN_SUBSTRING_MATCH_LEN = 3
-
-
-from transformers import AutoProcessor, AutoModelForSpeechSeq2Seq
-import torch
-
-model_id = "mohammedaly22/QwenCleo-ASR"
-
-processor = AutoProcessor.from_pretrained(model_id)
-model = AutoModelForSpeechSeq2Seq.from_pretrained(
-    model_id,
-    torch_dtype=torch.float16,
-    device_map="auto"
-)
-
-
-
 
 
 class ProcedureItem(BaseModel):
@@ -116,15 +99,9 @@ def find_patients_by_name_db(db: Session, name: str) -> List[Patient]:
 
 
 def transcribe_audio(audio_bytes: bytes, filename: str = "audio.webm") -> str:
-    """Transcribe a doctor's voice note to Arabic text using Groq's Whisper large-v3."""
-    result = _groq_client.audio.transcriptions.create(
-        file=(filename, audio_bytes),
-        model=model,
-        language="ar",
-        response_format="text",
-    )
-    text = result if isinstance(result, str) else result.text
-    return text.strip()
+    """Transcribe a doctor's voice note to Arabic text using the local
+    QwenCleo-ASR model on GPU (see app/asr.py)."""
+    return asr.transcribe(audio_bytes, language="ar")
 
 
 def build_draft(db: Session, transcript: str) -> dict:

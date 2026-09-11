@@ -22,6 +22,7 @@
 - [How the System Works](#-how-the-system-works)
 - [Patient Treatment Workflow](#-patient-treatment-workflow)
 - [Webhook Architecture](#-webhook-architecture)
+- [Local Speech Recognition (ASR)](#-local-speech-recognition-asr)
 - [Load Testing with k6](#-load-testing-with-k6)
 - [Technology Stack](#-technology-stack)
 - [Project Structure](#-project-structure)
@@ -55,7 +56,7 @@ Everything reads and writes the *same* appointments/patients/payments tables —
 | | |
 |---|---|
 | 💬 **WhatsApp booking agent** | Book / reschedule / cancel in Egyptian Arabic, via LangGraph + Groq, with a two-tier fast/full model router |
-| 🎙️ **Voice everywhere** | Patients can send voice notes to book; the doctor can dictate a whole visit's charges out loud |
+| 🎙️ **Voice everywhere, transcribed locally** | Patients can send voice notes to book; the doctor can dictate a whole visit's charges out loud — both run through a local Arabic ASR model (QwenCleo-ASR) on GPU, not a third-party API |
 | ⚡ **Event-driven, not polled** | Messages arrive via an HMAC-signed webhook the instant they're sent — see [Webhook Architecture](#-webhook-architecture) |
 | 🔒 **Concurrency-safe by design** | Per-patient locking + a bounded semaphore let independent conversations run in parallel without corrupting shared state |
 | 📊 **Self-writing analytics** | Monthly revenue, no-show cost, patient retention — summarized into Arabic business insights by an LLM, auto-emailed as a PDF on the 1st |
@@ -101,7 +102,8 @@ graph TB
 
     subgraph Data["Data & AI"]
         PG[(Postgres<br/>Supabase pooler)]
-        Groq[Groq<br/>LLM + Whisper]
+        Groq[Groq<br/>LLM]
+        ASR[Local GPU<br/>QwenCleo-ASR]
         SMTP[SMTP<br/>monthly report email]
     end
 
@@ -113,6 +115,7 @@ graph TB
     Agent -->|reply| Webhook
     Agent <--> PG
     Agent <--> Groq
+    Agent -.voice.-> ASR
 
     Doctor --> Login
     Secretary --> Login
@@ -121,7 +124,7 @@ graph TB
     DoctorUI <-->|JWT| REST
     SecretaryUI <-->|JWT| REST
     REST <--> PG
-    REST -.voice.-> Groq
+    REST -.voice.-> ASR
 
     Scheduler --> PG
     Scheduler -->|reminders / nudges| Webhook
@@ -137,7 +140,8 @@ graph TB
 | **`app/routers/`** | The staff-facing REST API — auth, doctor actions, secretary actions. JWT-gated. |
 | **`app/scheduler.py`** | APScheduler jobs that run without any human trigger: daily reminders, monthly analytics + email, re-engagement nudges. |
 | **Postgres (Supabase)** | Single source of truth for patients, appointments, payments, procedures, treatment plans, and analytics snapshots — read and written by *both* halves of the system. RLS enabled on every table. |
-| **Groq** | LLM calls (booking-agent reasoning, monthly insights, voice-charge extraction) and Whisper transcription (voice notes, in both directions). |
+| **Groq** | LLM calls only — booking-agent reasoning, monthly insights, voice-charge extraction. |
+| **Local ASR** (`app/asr.py`) | Arabic speech-to-text for voice notes in both directions, running on-machine (GPU if available, CPU fallback) — see [Local Speech Recognition](#-local-speech-recognition-asr). |
 | **React dashboard** | Doctor and secretary screens — JWT auth, plain `fetch`, no global state library. |
 
 ---
@@ -158,7 +162,7 @@ graph TB
 1. Doctor or secretary logs in (`POST /api/auth/login`) — bcrypt-verified, a 12-hour JWT comes back.
 2. Every subsequent request carries `Authorization: Bearer <token>`; `require_doctor`/`require_secretary` dependencies gate each router by role.
 3. Requests hit Postgres directly through SQLAlchemy — the same tables the WhatsApp agent writes to, so a booking made five minutes ago over WhatsApp is already on the secretary's "today" screen.
-4. Voice-driven actions (the doctor dictating charges) go through Groq Whisper for transcription and a structured-output LLM call for extraction — but pricing is **always** resolved against the real `procedures` table, never trusted from the model.
+4. Voice-driven actions (the doctor dictating charges) go through the local ASR model for transcription and a structured-output LLM call for extraction — but pricing is **always** resolved against the real `procedures` table, never trusted from the model.
 
 ---
 
@@ -197,7 +201,7 @@ Every appointment now carries an `appointment_type`: **`consultation`** (a first
 
 ### The doctor's voice treatment plan
 
-Mirrors the existing voice-charge feature's exact pattern — nothing new invented: record → Groq Whisper transcribes → a structured LLM call extracts each item (procedure, tooth area, general vs. tooth-specific) → the doctor reviews and edits before anything is saved → `POST /api/doctor/treatment-plan` commits it as persistent `TreatmentItem` rows (`pending` / `in_progress` / `completed`). The new `app/voice_treatment_plan.py` module directly reuses `voice_charge.py`'s patient/procedure matching functions rather than duplicating them.
+Mirrors the existing voice-charge feature's exact pattern — nothing new invented: record → the local ASR model transcribes → a structured LLM call extracts each item (procedure, tooth area, general vs. tooth-specific) → the doctor reviews and edits before anything is saved → `POST /api/doctor/treatment-plan` commits it as persistent `TreatmentItem` rows (`pending` / `in_progress` / `completed`). The new `app/voice_treatment_plan.py` module directly reuses `voice_charge.py`'s patient/procedure matching functions rather than duplicating them.
 
 ### Booking against the plan, later
 
@@ -324,6 +328,55 @@ Everything after signature verification and the idempotency claim is asynchronou
 
 ---
 
+## 🎙️ Local Speech Recognition (ASR)
+
+Every voice note — patient WhatsApp messages and the doctor's dictated charges/treatment plans — is transcribed **on-machine**, not through a third-party API. This replaced an earlier Groq Whisper (`whisper-large-v3`) integration.
+
+### Why we moved off Groq Whisper
+
+The project originally sent every voice note to Groq's hosted `whisper-large-v3`. Four reasons drove the switch to a local model:
+
+| | Groq Whisper (before) | QwenCleo-ASR, local (now) |
+|---|---|---|
+| **Accuracy on this clinic's actual speech** | Whisper large-v3 is a strong general model, but it's not tuned for Egyptian dialect or mid-sentence Arabic/English code-switching — both routine here ("عايز أعمل *check-up* بكرة"). Measured WER **63.94** on that pattern. | [QwenCleo-ASR](https://huggingface.co/mohammedaly22/QwenCleo-ASR), a fine-tune of `Qwen3-ASR-1.7B` built specifically for Egyptian Arabic + code-switching. Measured WER **19.85** on the same pattern — roughly **half the error rate**, per the model's own published benchmark. Fewer transcription errors means fewer misheard patient names, procedures, and dates flowing into the booking agent and the doctor's charge sheet. |
+| **Patient data leaving the building** | Every patient voice note — potentially describing symptoms, names, phone numbers — left the system as an API call to a third-party inference provider. | Audio never leaves the machine. For a clinic handling patient health information, this closes a real data-exposure surface, not just a cost line. |
+| **External dependency & cost** | A live network call, Groq API quota, and Groq uptime become part of the critical path for every single voice note — patient-facing and doctor-facing alike. Free-tier rate limits (~30 req/min) are shared with every other Groq call the app makes (LLM reasoning, monthly insights). | No network call, no quota, no per-note cost, one fewer service that can be down. Frees the whole Groq rate-limit budget for the LLM calls that actually need a hosted model. |
+| **Latency at production scale** | Near-instant (a hosted, GPU-backed API). | **On CPU, this was the blocker** — 70-80+ seconds per clip, unusable for a synchronous "doctor records → waits on screen" flow, which is why the local model was initially shelved after a first attempt. **On GPU, ~0.2s steady-state** — see benchmarks below — which is what made switching to it in production viable at all. |
+
+Net effect: better accuracy on the clinic's actual patients, patient audio staying local, and no added latency — but only once a GPU was available to run it on; see below.
+
+### The checkpoint conversion
+
+The model as published on the Hub can't be loaded directly with `transformers`' current `qwen3_asr` implementation: it was saved against an older `transformers==4.57.6` module layout (`"thinker.*"`-prefixed weight keys, a nested `thinker_config`, and a `WhisperFeatureExtractor` processor) that silently mismatches the current layout — it loads with zero errors but almost every weight ends up randomly initialized, and the processor fails outright on any clip whose mel-frame length isn't already a multiple of 100 (`Qwen3ASREncoder` requires this for its chunked attention).
+
+`scripts/convert_qwencleo_checkpoint.py` fixes this once: it remaps the legacy state-dict keys to the current `model.audio_tower.*` / `model.language_model.*` layout, rebuilds a flat `config.json`, and reconstructs the processor with the correct `Qwen3ASRFeatureExtractor` (which right-pads the mel axis to the required multiple). The corrected checkpoint is saved to `models/qwencleo-asr-converted/` — gitignored (it's ~4GB) and regenerated by re-running the script:
+
+```bash
+uv run python scripts/convert_qwencleo_checkpoint.py
+```
+
+### How it's used
+
+`app/asr.py` is the single shared, lazy-loaded module both `app/voice_charge.py` (doctor dictation) and `app/whatsapp_agent/transcription.py` (patient voice notes) call into — the model is loaded once, on first use, and that one instance serves both paths, so it only ever occupies memory/VRAM once. It:
+
+1. Decodes any container ffmpeg understands (WhatsApp's ogg/opus, webm, m4a, …) to 16kHz mono PCM via a bundled static ffmpeg binary (`imageio_ffmpeg` — no system PATH dependency).
+2. Runs inference on `cuda` when available (falls back to `cpu` otherwise), in `bfloat16`.
+3. Returns plain transcribed text via the processor's `apply_transcription_request` / `decode(..., return_format="transcription_only")` helpers.
+
+On a GPU (tested on an RTX 5070 Ti Laptop, 12GB VRAM), steady-state inference is **~0.2s per clip** with the model warm, versus **70-80+ seconds** on CPU — the difference between usable in a synchronous "doctor records → waits on screen" flow and not.
+
+### Setting it up on a new machine
+
+1. Ensure `HF_TOKEN` is set in `.env` (needed once, to download the source checkpoint for conversion — not needed afterward, since the converted checkpoint loads entirely from local disk).
+2. Run the conversion script above.
+3. For GPU acceleration, install a CUDA-matched `torch` build for your hardware (the plain `pyproject.toml` pin stays CPU-generic for portability) — e.g. for a Blackwell-generation GPU:
+   ```bash
+   uv pip install "torch==2.13.0+cu130" --index-url https://download.pytorch.org/whl/cu130
+   ```
+   Note this is a local venv override, not a lockfile change — a future `uv sync` will reinstall the CPU build, so re-run this after any `uv sync` on a GPU machine.
+
+---
+
 ## 🧪 Load Testing with k6
 
 ### What k6 is, and why it's here
@@ -400,7 +453,7 @@ It measures the receiver's own concurrency ceiling — not Groq's, not OpenWA's.
 |---|---|
 | **LangGraph** | State-machine orchestration for the booking agent — tool-calling, conditional routing, per-thread memory |
 | **Groq** (`openai/gpt-oss-120b` / `-20b`) | Fast, free-tier-friendly inference; two model sizes let a cheap classifier handle simple turns and reserve the larger model for complex ones |
-| **Groq Whisper (`whisper-large-v3`)** | Arabic voice-note transcription, used by both the WhatsApp agent and the doctor's voice-charge feature |
+| **QwenCleo-ASR** (Qwen3-ASR-1.7B fine-tune, local) | Egyptian Arabic + code-switching voice transcription — used by both the WhatsApp agent and the doctor's voice-charge feature; roughly halves Whisper large-v3's error rate on this exact speech pattern (WER 19.85 vs 63.94). Runs on-machine via `transformers`, GPU-accelerated when CUDA is available. See [Local Speech Recognition](#-local-speech-recognition-asr). |
 | **LangChain** (core, community, groq, openai, huggingface integrations) | Structured-output parsing, message primitives, tool decorators |
 
 ### Backend
@@ -453,6 +506,7 @@ Clinic/
 │   ├── reports.py / email_sender.py  # Monthly PDF report + email delivery
 │   ├── voice_charge.py            # Doctor's voice → transcription → structured charge draft
 │   ├── voice_treatment_plan.py    # Doctor's voice → structured treatment-plan draft (mirrors voice_charge.py)
+│   ├── asr.py                     # Shared local Arabic ASR (QwenCleo-ASR) — one model instance, GPU or CPU
 │   ├── whatsapp.py                # Proactive (non-conversational) WhatsApp sends + document/receipt sending
 │   ├── receipts.py / config.py    # Receipt photo storage (secretary uploads); clinic-wide constants
 │   ├── routers/                   # auth.py · doctor.py · secretary.py
@@ -463,7 +517,7 @@ Clinic/
 │       ├── graph.py                # LangGraph state machine, system prompt, router
 │       ├── tools.py                # lookup/register/book/reschedule/cancel/… (9 tools)
 │       ├── sender.py               # Candidate-based WhatsApp reply sender
-│       ├── transcription.py        # Voice-note → text (Groq Whisper)
+│       ├── transcription.py        # Voice-note → text (via app/asr.py, local)
 │       ├── db.py                   # Thread-local psycopg2 connections
 │       ├── llm.py / config.py      # Model clients; shared constants
 │       └── registration.py         # Self-registers the webhook with OpenWA on startup
@@ -479,12 +533,17 @@ Clinic/
 ├── load-tests/
 │   └── webhook_load_test.js       # k6 script — see above
 │
+├── scripts/
+│   └── convert_qwencleo_checkpoint.py  # One-time: fixes the Hub checkpoint's stale layout for local loading
+├── models/                         # Local ASR checkpoint (gitignored, multi-GB — regenerate via the script above)
+│
 ├── agent_Start.ipynb               # WhatsApp agent notebook (reference / manual testing)
 ├── add_*.py                        # Idempotent DB migrations (no Alembic — see Setup)
 │   ├── add_treatment_workflow.py   # treatment_items table, appointment/payment linkage, consultation-fee procedure
 │   └── add_rls_hardening.py        # Enables RLS on the 4 tables Supabase's advisor flagged
 ├── migrate_sqlite_to_pg.py         # One-off legacy-SQLite → Postgres carry-over
 ├── seed_users.py                   # CLI to create the first doctor/secretary users
+├── reset_for_demo.py               # One-off: wipes transactional data for a from-scratch demo (keeps logins)
 ├── pyproject.toml / uv.lock         # Python deps (uv-managed)
 └── .env                            # All secrets/config (never committed)
 ```
@@ -499,7 +558,8 @@ Clinic/
 - Node.js (for the frontend and OpenWA)
 - Docker Desktop (for OpenWA)
 - A Supabase (or any Postgres) database
-- API keys: Groq (required), SMTP credentials (optional, for the monthly email)
+- API keys: Groq (required, for LLM calls), Hugging Face token (required once, to download and convert the local ASR checkpoint — see [Local Speech Recognition](#-local-speech-recognition-asr)), SMTP credentials (optional, for the monthly email)
+- A GPU is optional but strongly recommended for voice transcription latency (CPU fallback works but is 300x+ slower)
 
 ### Environment variables (`.env`, repo root)
 
@@ -507,7 +567,8 @@ Clinic/
 |---|---|
 | `DATABASE_URL` | Postgres connection string (Supabase transaction pooler, port 6543) |
 | `JWT_SECRET` | Signs dashboard login tokens |
-| `GROQ_API_KEY` | LLM + Whisper calls |
+| `GROQ_API_KEY` | LLM calls |
+| `HF_TOKEN` | Downloads the source ASR checkpoint for conversion (see [Local Speech Recognition](#-local-speech-recognition-asr)) — not needed at runtime once converted |
 | `OPENWA_URL` / `OPENWA_API_KEY` / `OPENWA_SESSION_ID` | Talking to the WhatsApp gateway |
 | `WHATSAPP_WEBHOOK_SECRET` | HMAC key for verifying inbound webhook deliveries |
 | `WHATSAPP_AGENT_CONCURRENCY` | Max concurrent conversations processed at once (default 5) |

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { fixStuckDuration, logAudioDiagnostics } from "../utils/fixStuckDuration";
 import { useAuth } from "../auth/AuthContext";
 import { apiFetch, uploadVoiceCharge, uploadVoiceTreatmentPlan } from "../api";
 import MonthlyAnalytics from "./MonthlyAnalytics";
@@ -145,17 +146,21 @@ export default function DoctorView() {
       mr.ondataavailable = (e) => {
         if (e.data.size > 0) tpChunksRef.current.push(e.data);
       };
-      mr.onstop = () => {
+      mr.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
-        const blob = new Blob(tpChunksRef.current, { type: mr.mimeType || "audio/webm" });
-        if (blob.size < 2000) {
+        const rawBlob = new Blob(tpChunksRef.current, { type: mr.mimeType || "audio/webm" });
+        if (rawBlob.size < 2000) {
           setTpError("Recording too short — please try again.");
           setTpRecState("idle");
           return;
         }
-        const url = URL.createObjectURL(blob);
-        setTpRecordedAudioUrl(url);
-        tpHandleVoiceUpload(blob, url);
+        // Playback blob drops the ";codecs=opus" parameter: Chrome's media
+        // element can refuse a Blob whose type carries codec parameters, even
+        // though the identical bytes decode fine elsewhere (Groq transcribes
+        // this same recording correctly). Upload keeps the full-fidelity blob.
+        const playbackUrl = URL.createObjectURL(new Blob(tpChunksRef.current, { type: "audio/webm" }));
+        setTpRecordedAudioUrl(playbackUrl);
+        tpHandleVoiceUpload(rawBlob, playbackUrl);
       };
       tpMediaRecorderRef.current = mr;
       mr.start();
@@ -320,17 +325,21 @@ export default function DoctorView() {
       mr.ondataavailable = (e) => {
         if (e.data.size > 0) chunksRef.current.push(e.data);
       };
-      mr.onstop = () => {
+      mr.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
-        const blob = new Blob(chunksRef.current, { type: mr.mimeType || "audio/webm" });
-        if (blob.size < 2000) {
+        const rawBlob = new Blob(chunksRef.current, { type: mr.mimeType || "audio/webm" });
+        if (rawBlob.size < 2000) {
           setError("Recording too short — please try again.");
           setRecState("idle");
           return;
         }
-        const url = URL.createObjectURL(blob);
-        setRecordedAudioUrl(url);
-        handleVoiceUpload(blob, url);
+        // Playback blob drops the ";codecs=opus" parameter: Chrome's media
+        // element can refuse a Blob whose type carries codec parameters, even
+        // though the identical bytes decode fine elsewhere (Groq transcribes
+        // this same recording correctly). Upload keeps the full-fidelity blob.
+        const playbackUrl = URL.createObjectURL(new Blob(chunksRef.current, { type: "audio/webm" }));
+        setRecordedAudioUrl(playbackUrl);
+        handleVoiceUpload(rawBlob, playbackUrl);
       };
       mediaRecorderRef.current = mr;
       mr.start();
@@ -522,7 +531,17 @@ export default function DoctorView() {
               {tpRecordedAudioUrl && (
                 <div>
                   <label style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-soft)" }}>Playback</label>
-                  <audio controls src={tpRecordedAudioUrl} style={{ width: "100%", marginTop: 4 }} />
+                  <audio
+                    controls
+                    src={tpRecordedAudioUrl}
+                    onLoadedMetadata={(e) => {
+                      logAudioDiagnostics(e.currentTarget, "tp/loadedmetadata");
+                      fixStuckDuration(e.currentTarget);
+                    }}
+                    onError={(e) => logAudioDiagnostics(e.currentTarget, "tp/error")}
+                    onCanPlay={(e) => logAudioDiagnostics(e.currentTarget, "tp/canplay")}
+                    style={{ width: "100%", marginTop: 4 }}
+                  />
                 </div>
               )}
               <div>
@@ -714,7 +733,17 @@ export default function DoctorView() {
               {recordedAudioUrl && (
                 <div>
                   <label style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-soft)" }}>Playback</label>
-                  <audio controls src={recordedAudioUrl} style={{ width: "100%", marginTop: 4 }} />
+                  <audio
+                    controls
+                    src={recordedAudioUrl}
+                    onLoadedMetadata={(e) => {
+                      logAudioDiagnostics(e.currentTarget, "charge/loadedmetadata");
+                      fixStuckDuration(e.currentTarget);
+                    }}
+                    onError={(e) => logAudioDiagnostics(e.currentTarget, "charge/error")}
+                    onCanPlay={(e) => logAudioDiagnostics(e.currentTarget, "charge/canplay")}
+                    style={{ width: "100%", marginTop: 4 }}
+                  />
                 </div>
               )}
               <div>

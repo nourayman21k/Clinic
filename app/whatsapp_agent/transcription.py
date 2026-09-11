@@ -2,26 +2,18 @@ import base64
 import os
 import tempfile
 
-from groq import Groq
-
-from .config import GROQ_API_KEY
+from .. import asr
 from .retry import with_retry
-
-groq_client = Groq(api_key=GROQ_API_KEY)
 
 
 def transcribe_audio(file_path: str) -> str:
-    """Transcribe an audio file to Arabic text using Groq's Whisper large-v3."""
+    """Transcribe an audio file to Arabic text using the local QwenCleo-ASR
+    model on GPU (see app/asr.py) -- shared with the doctor's voice-charge
+    dictation, so the model is only ever loaded once, process-wide."""
     def _call():
         with open(file_path, "rb") as f:
-            return groq_client.audio.transcriptions.create(
-                file=f,
-                model="whisper-large-v3",
-                language="ar",
-                response_format="json",
-                temperature=0.0,
-            )
-    return with_retry(_call).text
+            return asr.transcribe(f.read(), language="ar")
+    return with_retry(_call)
 
 
 def save_and_transcribe_voice(media_data_base64: str, mimetype: str) -> str:
