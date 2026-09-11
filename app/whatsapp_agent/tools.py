@@ -342,12 +342,21 @@ def cancel_appointment(patient_id: str, appointment_id: str) -> str:
 
     cur = db.conn.cursor()
     cur.execute("UPDATE appointments SET status = 'cancelled' WHERE id = %s", (appt["id"],))
+    # The visit isn't happening, so its uncollected charge (e.g. the consultation fee
+    # book_appointment raises up front) must not keep sitting in the secretary's pending
+    # list. Only 'pending' is voided -- a 'partial'/'paid' row means money actually changed
+    # hands, which is a refund decision for staff, not something to erase automatically.
+    cur.execute(
+        "UPDATE payments SET status = 'cancelled' WHERE appointment_id = %s AND status = 'pending'",
+        (appt["id"],),
+    )
+    fee_note = " Its unpaid fee was cancelled too -- the patient owes nothing for it." if cur.rowcount else ""
 
     target = sender.get_whatsapp_target(appt["patient_id"], fallback_phone=appt["phone"])
     when = appt["scheduled_at"].astimezone(CAIRO).strftime("%Y-%m-%d %H:%M")
     sent = sender.send_whatsapp_text_to_chat(target, f"Hi {appt['name']}, your appointment on {when} has been cancelled.")
     note = "WhatsApp notification sent." if sent else "WhatsApp notification failed to send."
-    return f"Appointment {appt['id']} has been cancelled. {note}"
+    return f"Appointment {appt['id']} has been cancelled.{fee_note} {note}"
 
 
 @tool

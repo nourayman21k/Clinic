@@ -286,7 +286,12 @@ export default function SecretaryView() {
       method: "PATCH",
       body: JSON.stringify({ status }),
     })
-      .then(() => loadAppointments())
+      .then(() => {
+        loadAppointments();
+        // A cancel voids the visit's uncollected charge, and marking one done can raise a
+        // new one -- either way the pending list on screen is now stale.
+        loadPending();
+      })
       .catch((e) => setStatusError(e.message))
       .finally(() => setStatusBusyId(null));
   }

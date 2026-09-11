@@ -29,6 +29,10 @@ wheels/
 # Third-party binaries — download separately, don't version
 ngrok.exe
 
+# Local ML model checkpoints (multi-GB) — regenerate via
+# scripts/convert_qwencleo_checkpoint.py, don't version
+models/
+
 # Node
 node_modules/
 
