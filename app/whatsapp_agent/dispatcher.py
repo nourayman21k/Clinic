@@ -1,6 +1,6 @@
 import asyncio
 
-from . import db, sender
+from . import db, rate_limit, sender
 from .config import WHATSAPP_AGENT_CONCURRENCY
 from .handler import handle_incoming_openwa_message
 
@@ -37,6 +37,15 @@ async def process_message(msg: dict) -> None:
     max_concurrency=1 assumption depends on only one turn per thread running
     at a time."""
     chat_id = msg["from"]
+
+    # Checked BEFORE the lock/semaphore/DB, and before the agent is ever touched --
+    # a rate-limited message must cost nothing. Silently dropped, no reply sent:
+    # a canned "you've hit your limit" notice on every over-limit message is
+    # itself a reply an abusive sender could keep triggering for free.
+    if not rate_limit.check_and_record(chat_id):
+        print(f"⏳ Rate limit hit for {chat_id} — message ignored")
+        return
+
     lock = _chat_locks.setdefault(chat_id, asyncio.Lock())
     async with _semaphore, lock:
         await asyncio.to_thread(_process_sync, msg)

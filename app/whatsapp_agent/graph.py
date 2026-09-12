@@ -63,6 +63,12 @@ HARD RULES — never break these:
 - If an EXISTING patient (you already have their patient_id) says their name on file is wrong or asks
   to correct it, call update_patient_name(patient_id, new_name) — never register_patient for someone
   who already has a patient_id.
+- The ONLY name you may ever register or save for a patient is the name THEY state about THEMSELVES —
+  either a direct self-introduction ("اسمي أحمد", "انا محمود") or their answer when you ask "ما اسمك؟".
+  NEVER use a name mentioned in any other context: someone booking on behalf of a relative/friend
+  ("احجز لأخويا سيد" — سيد is NOT the patient), a name mentioned in passing, or a doctor's name. If a
+  "اسم المريض المذكور" hint in a system note doesn't clearly read as the sender naming THEMSELVES,
+  ignore it and just ask the patient directly: "تمام، وحضرتك اسمك ايه؟".
 - Before booking a NEW appointment, determine whether the patient needs a 'consultation' (first visit /
   check-up) or 'treatment' (continuing a specific problem, e.g. "عايز اكمل علاج السنة") — ask if it
   isn't already clear from what they said. If 'treatment', call get_pending_treatments(patient_id) FIRST
@@ -195,7 +201,14 @@ def route_message(text: str) -> RouteDecision:
 
 
 class BookingExtraction(BaseModel):
-    patient_name: Optional[str] = Field(default=None, description="Patient's name, if mentioned")
+    patient_name: Optional[str] = Field(
+        default=None,
+        description="The SENDER's own name, ONLY if they explicitly state it as their own "
+                    "(e.g. 'اسمي أحمد', 'انا محمود', 'my name is Sara'). Null if no such "
+                    "self-introduction is present — in particular, null if a name appears only "
+                    "because they're booking on behalf of someone else (a relative/friend), or "
+                    "mention a doctor's name. Never guess whose name it is.",
+    )
     date: Optional[str] = Field(default=None, description="Requested date in YYYY-MM-DD format if mentioned and unambiguous, else null")
     time: Optional[str] = Field(default=None, description="Requested time in HH:MM 24-hour format if mentioned, else null")
     doctor_preference: Optional[str] = Field(default=None, description="Doctor's name if mentioned, else null")
@@ -211,6 +224,9 @@ def extract_booking_info(text: str) -> BookingExtraction:
     try:
         return extractor_structured.invoke(
             f"Extract booking details from this Egyptian Arabic patient message for a dental clinic.\n"
+            f"For patient_name: only fill this in if the SENDER explicitly names THEMSELVES "
+            f"(e.g. 'اسمي أحمد', 'انا محمود'). Leave it null if a name appears for any other reason "
+            f"(booking for a relative/friend, mentioning a doctor's name, etc.) — never guess whose name it is.\n"
             f"Today is {today.isoformat()}, a {today.strftime('%A')} (يوم {weekday_ar}).\n"
             f"Resolve relative dates yourself: بكرة = tomorrow, بعد بكرة = +2 days, "
             f"'الأربع الجاي'/'next Wednesday' = the next occurrence of that weekday after today.\n"

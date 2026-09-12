@@ -16,6 +16,13 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 WHATSAPP_WEBHOOK_SECRET = os.getenv("WHATSAPP_WEBHOOK_SECRET")
 WHATSAPP_AGENT_CONCURRENCY = int(os.getenv("WHATSAPP_AGENT_CONCURRENCY", "5"))
 
+# Per-patient abuse guard: caps how many incoming messages from the SAME chat can
+# reach the LLM agent within a rolling hour. Anything past this is answered with a
+# free canned notice (no LLM call, no token cost) instead of being processed --
+# see rate_limit.py. Not a security boundary -- in-memory, resets on restart, same
+# as dispatcher.py's own per-chat locks -- just a cheap cap on runaway spend.
+WHATSAPP_MAX_MESSAGES_PER_HOUR = int(os.getenv("WHATSAPP_MAX_MESSAGES_PER_HOUR", "15"))
+
 # Where OpenWA should POST webhook deliveries. OpenWA runs inside a Docker
 # container (Docker Desktop), so "127.0.0.1"/"localhost" would resolve to the
 # CONTAINER's own loopback, not this host -- host.docker.internal is Docker
