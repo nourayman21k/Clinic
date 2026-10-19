@@ -1,3 +1,4 @@
+from contextvars import ContextVar
 from datetime import datetime, timedelta
 
 import psycopg2.errors
@@ -6,6 +7,22 @@ from langchain_core.tools import tool
 from . import db, sender
 from ..config import CLINIC_NAME
 from .config import BOOKING_WINDOW_DAYS, CAIRO, CLINIC_HOURS, CLINIC_MAPS_LINK
+
+
+# The real WhatsApp sender's number for the message being processed, set by
+# graph.handle_whatsapp_message_v2. The model is asked to copy the number into
+# lookup_patient/register_patient and sometimes garbles it (seen in production:
+# a patient stored as "20196"; in testing "201099990004" became "20120999900004"),
+# so those tools use this instead -- patients only ever register themselves.
+CURRENT_SENDER_PHONE: ContextVar[str | None] = ContextVar("current_sender_phone", default=None)
+
+
+def _sender_phone(phone_from_model: str, tool: str) -> str:
+    real = CURRENT_SENDER_PHONE.get()
+    typed = sender.normalize_eg_phone(phone_from_model)
+    if real and typed != real:
+        print(f"   ⚠️ {tool}: model passed phone {phone_from_model!r}; using the sender's real number {real}.")
+    return real or typed
 
 
 def _parse_id(value: str, field_name: str) -> tuple:
@@ -66,7 +83,7 @@ def _record_exists(table: str, record_id: int) -> bool:
 @tool
 def lookup_patient(phone: str) -> str:
     """Look up a patient by phone number. Returns patient info if found, or a not-found message."""
-    phone = sender.normalize_eg_phone(phone)
+    phone = _sender_phone(phone, "lookup_patient")
     cur = db.conn.cursor()
     cur.execute("SELECT id, name FROM patients WHERE phone = %s", (phone,))
     row = cur.fetchone()
@@ -81,7 +98,7 @@ def register_patient(name: str, phone: str) -> str:
     Returns the new patient's id -- use that exact patient_id for any follow-up tool call
     (get_available_slots doesn't need it, but book_appointment, get_patient_appointments,
     reschedule_appointment, cancel_appointment, and send_whatsapp_confirmation all do)."""
-    phone = sender.normalize_eg_phone(phone)
+    phone = _sender_phone(phone, "register_patient")
     cur = db.conn.cursor()
     try:
         cur.execute(

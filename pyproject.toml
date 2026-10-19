@@ -26,6 +26,7 @@ dependencies = [
     "langgraph>=1.2.9",
     "langsmith>=0.10.2",
     "librosa>=1.0.0",
+    "open-alternative-jev[quant]",
     "passlib[bcrypt]==1.7.4",
     "psycopg2-binary>=2.9.12",
     "pydantic>=2.13.4",
@@ -48,4 +49,20 @@ dependencies = [
 [tool.uv.workspace]
 members = [
     "fine tuning",
+]
+
+# The GPU (CUDA 13.0) build of PyTorch -- the speech model and the System 1 router run on
+# the GPU. Without this, `uv sync` installs the CPU-only torch from PyPI (~300x slower ASR).
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }
+open-alternative-jev = { git = "https://github.com/ikermoel/open-alternative-jev" }
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
 ]

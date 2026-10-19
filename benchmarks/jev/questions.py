@@ -1,0 +1,123 @@
+"""100 labelled patient messages for the System 1 router benchmark
+(scripts/benchmark_jev.py), the way patients actually write to the clinic on
+WhatsApp: mostly Egyptian Arabic, some English and code-switching.
+
+Each entry: (expected_label, message, previous_bot_message_or_None). The last
+group are follow-ups whose meaning depends on what the bot just asked."""
+
+QUESTIONS = [
+    # --- book_appointment (15)
+    ("book_appointment", "عايز احجز كشف بكرة الساعة ١٠ الصبح", None),
+    ("book_appointment", "ممكن احجز ميعاد يوم الخميس؟", None),
+    ("book_appointment", "عايزة احجز تنظيف أسنان الأسبوع الجاي", None),
+    ("book_appointment", "احجزلي اقرب ميعاد متاح من فضلك", None),
+    ("book_appointment", "عايز اكمل علاج العصب، احجزلي جلسة", None),
+    ("book_appointment", "ابني عنده وجع في ضرسه عايز احجزله", None),
+    ("book_appointment", "I'd like to book a check-up on Sunday at 4pm", None),
+    ("book_appointment", "عايز اجي اركب التاج اللي الدكتور قال عليه", None),
+    ("book_appointment", "احجز لي يوم السبت الساعة ١١", None),
+    ("book_appointment", "ممكن ميعاد بعد بكرة الضهر؟", None),
+    ("book_appointment", "عاوز أحجز معاد كشف", None),
+    ("book_appointment", "Can I get an appointment tomorrow?", None),
+    ("book_appointment", "عايز احجز للحشو اللي باقي", None),
+    ("book_appointment", "سجلني يوم الاتنين الساعة ٢", None),
+    ("book_appointment", "احجزلي الساعة ٩ ونص الصبح يوم الحد", None),
+    # --- get_available_slots (10)
+    ("get_available_slots", "فيه مواعيد فاضية يوم الاتنين؟", None),
+    ("get_available_slots", "ايه المواعيد المتاحة بكرة؟", None),
+    ("get_available_slots", "الدكتور فاضي امتى يوم الخميس؟", None),
+    ("get_available_slots", "What times are free on Saturday?", None),
+    ("get_available_slots", "هو فيه حاجة فاضية الصبح يوم الأربع؟", None),
+    ("get_available_slots", "عندكم مواعيد بعد الساعة ٣ النهارده؟", None),
+    ("get_available_slots", "الساعة كام فاضي يوم ٢٠؟", None),
+    ("get_available_slots", "ممكن تقولي المواعيد المتاحة الأسبوع ده؟", None),
+    ("get_available_slots", "فيه ميعاد فاضي الساعة ٥ بكرة؟", None),
+    ("get_available_slots", "Any free slots on Monday afternoon?", None),
+    # --- reschedule_appointment (10)
+    ("reschedule_appointment", "عايز اغير ميعادي من الخميس للسبت", None),
+    ("reschedule_appointment", "ممكن نأجل الميعاد لبكرة؟", None),
+    ("reschedule_appointment", "أخّر ميعادي ساعة لو سمحت", None),
+    ("reschedule_appointment", "عايز اقدم الميعاد بتاعي", None),
+    ("reschedule_appointment", "Please move my appointment to next week", None),
+    ("reschedule_appointment", "خلي ميعادي الساعة ٣ بدل ٢", None),
+    ("reschedule_appointment", "مش هقدر اجي في ميعادي، ممكن يوم تاني؟", None),
+    ("reschedule_appointment", "عايز أغير معاد الكشف ليوم الحد", None),
+    ("reschedule_appointment", "ينفع نخلي الميعاد الصبح بدل بالليل؟", None),
+    ("reschedule_appointment", "Can I reschedule to Thursday?", None),
+    # --- cancel_appointment (10)
+    ("cancel_appointment", "الغي الحجز بتاعي لو سمحت", None),
+    ("cancel_appointment", "عايز الغي ميعاد بكرة", None),
+    ("cancel_appointment", "مش هقدر اجي خالص، الغي الميعاد", None),
+    ("cancel_appointment", "Cancel my appointment please", None),
+    ("cancel_appointment", "عايزة الغي الكشف", None),
+    ("cancel_appointment", "شيل الحجز اللي يوم السبت", None),
+    ("cancel_appointment", "الغي كل مواعيدي", None),
+    ("cancel_appointment", "مش محتاج الميعاد خلاص الغيه", None),
+    ("cancel_appointment", "I won't be able to come, please cancel", None),
+    ("cancel_appointment", "عايز الغي حجز التنظيف", None),
+    # --- get_patient_appointments (10)
+    ("get_patient_appointments", "هو ميعادي امتى؟", None),
+    ("get_patient_appointments", "عندي حجوزات ايه عندكم؟", None),
+    ("get_patient_appointments", "When is my next appointment?", None),
+    ("get_patient_appointments", "ممكن تفكرني بميعادي؟", None),
+    ("get_patient_appointments", "انا حاجز امتى بالظبط؟", None),
+    ("get_patient_appointments", "هو انا ليا ميعاد الأسبوع ده؟", None),
+    ("get_patient_appointments", "عايز اعرف مواعيدي الجاية", None),
+    ("get_patient_appointments", "ميعادي الساعة كام؟", None),
+    ("get_patient_appointments", "Do I have any bookings?", None),
+    ("get_patient_appointments", "اتأكد لي ان عندي ميعاد بكرة", None),
+    # --- get_pending_treatments (8)
+    ("get_pending_treatments", "ايه العلاج اللي لسه فاضلي؟", None),
+    ("get_pending_treatments", "الدكتور قالي محتاج ايه بالظبط؟", None),
+    ("get_pending_treatments", "What treatments do I still need?", None),
+    ("get_pending_treatments", "فاضل كام جلسة في خطة العلاج بتاعتي؟", None),
+    ("get_pending_treatments", "انا محتاج اعمل ايه تاني في سناني؟", None),
+    ("get_pending_treatments", "ايه الحاجات اللي الدكتور كتبهالي؟", None),
+    ("get_pending_treatments", "فاضلي حشو ولا خلصت؟", None),
+    ("get_pending_treatments", "عايز اعرف خطة العلاج", None),
+    # --- update_patient_name (6)
+    ("update_patient_name", "اسمي مكتوب غلط، اسمي هبة مش هالة", None),
+    ("update_patient_name", "صحح اسمي لو سمحت: محمود مش محمد", None),
+    ("update_patient_name", "My name is spelled wrong, it's Yasmine", None),
+    ("update_patient_name", "غير الاسم المسجل لأحمد سمير", None),
+    ("update_patient_name", "الاسم عندكم غلط، اسمي الصح نورهان", None),
+    ("update_patient_name", "عدلوا اسمي لـ مريم علي", None),
+    # --- register_patient (5)
+    ("register_patient", "انا اول مرة اتعامل معاكم، اسمي كريم عادل", None),
+    ("register_patient", "سجلني عندكم مريض جديد، اسمي سارة", None),
+    ("register_patient", "I'm a new patient, my name is Omar", None),
+    ("register_patient", "عايز اعمل ملف عندكم، اسمي ياسين", None),
+    ("register_patient", "انا مش مسجل عندكم، سجلني باسم منى حسن", None),
+    # --- lookup_patient (4)
+    ("lookup_patient", "انا مسجل عندكم ولا لأ؟", None),
+    ("lookup_patient", "Am I already registered with you?", None),
+    ("lookup_patient", "شوف كده انا موجود عندكم؟", None),
+    ("lookup_patient", "عندكم ملف باسمي؟", None),
+    # --- send_whatsapp_confirmation (4)
+    ("send_whatsapp_confirmation", "ابعتلي تأكيد الحجز تاني", None),
+    ("send_whatsapp_confirmation", "موصلنيش رسالة التأكيد", None),
+    ("send_whatsapp_confirmation", "Resend my booking confirmation please", None),
+    ("send_whatsapp_confirmation", "ابعتلي العنوان والتأكيد على الواتساب", None),
+    # --- general_chat (8)
+    ("general_chat", "السلام عليكم", None),
+    ("general_chat", "شكرا جزيلا", None),
+    ("general_chat", "صباح الخير", None),
+    ("general_chat", "Thanks a lot!", None),
+    ("general_chat", "تمام كده، متشكر", None),
+    ("general_chat", "ربنا يخليك", None),
+    ("general_chat", "اهلا", None),
+    ("general_chat", "ok thank you", None),
+    # --- follow-ups that only make sense with the bot's previous message (10)
+    ("book_appointment", "١٠:٣٠", "تمام، فيه مواعيد فاضية بكرة: ٠٩:٣٠، ١٠:٣٠، ١٢:٠٠. تحب الساعة كام؟"),
+    ("book_appointment", "ايوه احجز", "عندي ميعاد فاضي يوم الخميس الساعة ٤. أحجزهولك؟"),
+    ("book_appointment", "التاني", "عندك علاجين: ١) حشو ضرس ٢) تركيب تاج. عايز تحجز لأنهي واحد؟"),
+    ("get_available_slots", "يوم الاتنين", "تحب تحجز يوم ايه؟"),
+    ("cancel_appointment", "ايوه الغيه", "عندك ميعاد يوم السبت الساعة ١١. متأكد انك عايز تلغيه؟"),
+    ("reschedule_appointment", "خليه الساعة ٥", "ميعادك الحالي يوم الحد الساعة ٢. عايز تغيره لإمتى؟"),
+    ("register_patient", "اسمي احمد سامي", "أهلاً بيك! ممكن اسمك عشان أسجلك؟"),
+    ("update_patient_name", "لا اسمي هبة مش هالة", "سمعتك بتقول اسمك هالة، صح؟"),
+    ("book_appointment", "كشف", "حضرتك محتاج كشف ولا تكمل علاج؟"),
+    ("general_chat", "تمام شكرا", "تم حجز ميعادك يوم الخميس الساعة ٤ وبعتلك التأكيد."),
+]
+
+assert len(QUESTIONS) == 100, len(QUESTIONS)

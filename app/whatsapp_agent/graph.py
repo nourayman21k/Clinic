@@ -1,7 +1,7 @@
 import re
 from datetime import date
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
@@ -10,10 +10,10 @@ from pydantic import BaseModel, Field
 from typing import Annotated, Literal, Optional
 from typing_extensions import TypedDict
 
-from . import db, sender
+from . import db, router, sender
 from .llm import llm_full, llm_mini
 from .retry import with_retry
-from .tools import tools
+from .tools import CURRENT_SENDER_PHONE, tools
 
 SYSTEM_PROMPT = """You are a friendly Egyptian clinic voice receptionist.
 Speak in Egyptian Arabic dialect with patients.
@@ -109,10 +109,43 @@ AR_WEEKDAYS = ["الاثنين", "الثلاثاء", "الأربعاء", "الخ
 class ClinicState(TypedDict):
     messages: Annotated[list, add_messages]
     use_full_model: bool
+    user_text: str  # the patient's own words this turn (no system notes) -- what the router reads
+    # Set by router_node (see router.py). selected_tools == [] with general_chat False means ALL tools.
+    selected_tools: list
+    general_chat: bool
+    jev_label: str
+    jev_confidence: float
 
 
 llm_mini_with_tools = llm_mini.bind_tools(tools)
 llm_full_with_tools = llm_full.bind_tools(tools)
+
+
+def router_node(state: ClinicState) -> dict:
+    """System 1 step (JEV's router_node): decide this turn's tool scope locally,
+    before any Groq call. Sees the bot's previous message for context, and keeps
+    the previous turn's tools on follow-ups."""
+    messages = state["messages"]
+    earlier = messages[:-1]
+    previous_reply = next((str(m.content) for m in reversed(earlier) if isinstance(m, AIMessage) and m.content), None)
+    previous_tools = None
+    if any(isinstance(m, AIMessage) for m in earlier):
+        scope = state.get("selected_tools") or []
+        previous_tools = tuple(scope) if (scope or state.get("general_chat")) else tuple(router.ALL_TOOLS)
+    decision = router.route(state.get("user_text") or str(messages[-1].content), previous_reply, previous_tools)
+    if decision["jev_used"]:
+        scope = f"{len(decision['selected_tools']) or len(router.ALL_TOOLS)} tools"
+        print(f"   🧭 Router: {decision['jev_label']} ({decision['jev_confidence']:.2f}) -> {scope}")
+    return {k: decision[k] for k in ("selected_tools", "general_chat", "jev_label", "jev_confidence")}
+
+
+def _model_for(state: ClinicState):
+    """Bind only the tools the router scoped for this turn (JEV's agent_node)."""
+    full = state.get("use_full_model", False)
+    scope = state.get("selected_tools") or []
+    if scope:
+        return (llm_full if full else llm_mini).bind_tools([t for t in tools if t.name in scope])
+    return llm_full_with_tools if full else llm_mini_with_tools  # not confident: every tool
 
 
 def _dated_system_prompt() -> str:
@@ -134,18 +167,39 @@ def agent(state: ClinicState) -> ClinicState:
     messages = state["messages"]
     if not any(isinstance(m, SystemMessage) for m in messages):
         messages = [SystemMessage(content=_dated_system_prompt())] + messages
-    use_full_model = state.get("use_full_model", False)
-    model_to_use = llm_full_with_tools if use_full_model else llm_mini_with_tools
+    model_to_use = _model_for(state)
     # Retry a transient LLM failure HERE, inside this single graph.invoke() call,
     # instead of letting it bubble out to the caller -- see retry.with_retry's docstring.
-    response = with_retry(lambda: model_to_use.invoke(messages))
+    try:
+        response = with_retry(lambda: model_to_use.invoke(messages))
+    except Exception as e:
+        already_all_tools = not state.get("selected_tools") and not state.get("general_chat")
+        if already_all_tools or not _wanted_unbound_tool(e):
+            raise
+        # The router's scope was too narrow -- e.g. "اسمي نور وعايز احجز بكرة" is
+        # routed to register_patient but also needs booking tools, and Groq rejects
+        # (rather than degrades) a call to an unbound tool. Redo this step with
+        # every tool and keep them for the rest of the conversation: a misroute
+        # costs one extra call instead of a failed conversation.
+        print(f"   🧭 Router scope too narrow ({str(e)[:120]}) -- retrying this step with all tools.")
+        full_model = llm_full_with_tools if state.get("use_full_model", False) else llm_mini_with_tools
+        response = with_retry(lambda: full_model.invoke(messages))
+        return {"messages": [response], "selected_tools": [], "general_chat": False}
     return {"messages": [response]}
 
 
+def _wanted_unbound_tool(e: Exception) -> bool:
+    """Groq's 400 when the model calls a tool that wasn't bound for this call."""
+    msg = str(e).lower()
+    return "attempted to call tool" in msg or "tool call validation failed" in msg or "tool choice is none" in msg
+
+
 _builder = StateGraph(ClinicState)
+_builder.add_node("router", router_node)
 _builder.add_node("agent", agent)
 _builder.add_node("tools", ToolNode(tools))
-_builder.add_edge(START, "agent")
+_builder.add_edge(START, "router")
+_builder.add_edge("router", "agent")
 _builder.add_conditional_edges("agent", tools_condition)
 _builder.add_edge("tools", "agent")
 
@@ -174,6 +228,7 @@ ESCALATION_KEYWORDS = [
 ]
 
 DIRECT_REPLIES_KEYWORDS_HINT = "شكراً! لو احتجت أي حاجة تانية أنا موجود. 😊"
+EMPTY_REPLY_FALLBACK = "أهلاً بيك 🦷 أقدر أساعدك إزاي؟ تحب تحجز ميعاد، تغيّر ميعاد، ولا تسأل عن حاجة؟"
 
 
 def route_message(text: str) -> RouteDecision:
@@ -253,12 +308,19 @@ def handle_whatsapp_message_v2(chat_id: str, phone: str, message_text: str, is_v
     is_first_message = not existing_state.values.get("messages")
 
     if is_first_message:
-        route_result = route_message(message_text)
-        if route_result.route == "direct":
-            reply_text = DIRECT_REPLIES_KEYWORDS_HINT
-            sender.send_whatsapp_text_to_chat(chat_id, reply_text)
-            return reply_text
-        use_full = route_result.complexity == "complex"
+        if router.get_decider() is not None:
+            # The local System 1 router (router_node) decides this turn's tools for
+            # free -- including "no tools" for a greeting -- so the extra Groq
+            # routing call below isn't needed. Both "layers" are the same model
+            # anyway (llm.py), so complexity routing changed nothing.
+            use_full = False
+        else:
+            route_result = route_message(message_text)
+            if route_result.route == "direct":
+                reply_text = DIRECT_REPLIES_KEYWORDS_HINT
+                sender.send_whatsapp_text_to_chat(chat_id, reply_text)
+                return reply_text
+            use_full = route_result.complexity == "complex"
 
         extracted = extract_booking_info(message_text)
 
@@ -308,17 +370,26 @@ def handle_whatsapp_message_v2(chat_id: str, phone: str, message_text: str, is_v
         enriched_text = message_text
 
     result = None
+    # lookup_patient / register_patient use the real sender number, never the model's copy of it.
+    sender_token = CURRENT_SENDER_PHONE.set(sender.normalize_eg_phone(phone))
     try:
         result = graph.invoke(
-            {"messages": [HumanMessage(content=enriched_text)], "use_full_model": use_full},
+            {"messages": [HumanMessage(content=enriched_text)], "use_full_model": use_full, "user_text": message_text},
             thread_config,
         )
         reply_text = result["messages"][-1].content
+        if not str(reply_text or "").strip():
+            # The model can end a turn with no text at all (seen with gpt-oss on Groq);
+            # never send the patient an empty WhatsApp message.
+            print(f"   ⚠️ Agent produced an empty reply for {chat_id} -- sending a generic prompt instead.")
+            reply_text = EMPTY_REPLY_FALLBACK
     except Exception as e:
         # The dispatcher does not retry a failed message at all (see dispatcher.py) --
         # a transient error just gets the same generic apology as any other failure.
         print(f"   ⚠️ Agent crashed processing message from {chat_id}: {type(e).__name__}: {e}")
         reply_text = "معلش، حصلت مشكلة تقنية عندنا. ممكن تبعت طلبك تاني؟"
+    finally:
+        CURRENT_SENDER_PHONE.reset(sender_token)
 
     # Link whatsapp_chat_id straight to whichever patient this turn actually
     # touched, read from lookup_patient/register_patient's own result in THIS

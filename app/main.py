@@ -1,4 +1,5 @@
 import sys
+import threading
 from contextlib import asynccontextmanager
 
 # Windows' console codepage (e.g. cp1256) can't encode the emoji/Arabic text used
@@ -20,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from .routers import auth, doctor, secretary
 from .receipts import UPLOADS_DIR
 from .scheduler import start_scheduler, shutdown_scheduler
+from .whatsapp_agent import router as jev_router
 from .whatsapp_agent.registration import register_openwa_webhook
 from .whatsapp_agent.webhook import router as whatsapp_webhook_router
 
@@ -28,6 +30,8 @@ from .whatsapp_agent.webhook import router as whatsapp_webhook_router
 async def lifespan(app: FastAPI):
     start_scheduler()
     register_openwa_webhook()
+    if jev_router.ENABLED:  # load the System 1 router in the background so the first patient doesn't wait
+        threading.Thread(target=jev_router.warm_up, name="jev-warm-up", daemon=True).start()
     yield
     shutdown_scheduler()
 

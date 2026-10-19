@@ -21,6 +21,7 @@
 - [System Architecture](#-system-architecture)
 - [How the System Works](#-how-the-system-works)
 - [Patient Treatment Workflow](#-patient-treatment-workflow)
+- [System 1 Router (Jev)](#-system-1-router-jev)
 - [Webhook Architecture](#-webhook-architecture)
 - [Local Speech Recognition (ASR)](#-local-speech-recognition-asr)
 - [Load Testing with k6](#-load-testing-with-k6)
@@ -227,6 +228,48 @@ A new `GET /api/doctor/patients/{id}` gives the doctor a read-only view of a pat
 
 ---
 
+## 🧭 System 1 Router (Jev)
+
+The same idea as [nourayman21k/JEV](https://github.com/nourayman21k/JEV), with the same model: before every Groq call, a **local open-weights model** — [`open-alternative-jev`](https://github.com/ikermoel/open-alternative-jev)'s `Decider` over **Qwen/Qwen3.5-4B** — reads the patient's message in **one forward pass** (no text generated) and decides which of the agent's 10 tools it needs, with a confidence. The agent then binds only that tool group instead of sending all 10 tool schemas on every call.
+
+```mermaid
+flowchart LR
+    START --> router["router<br/>(Jev · Qwen3.5-4B · local GPU)"]
+    router --> agent["agent<br/>(gpt-oss-120b on Groq)"]
+    agent -- tool call --> tools --> agent
+    agent -- reply --> END
+```
+
+| Router's answer | Tools bound for this turn |
+|---|---|
+| A tool, confidence ≥ 0.75 | That tool + the lookups it needs (`TOOL_GROUPS` in [`router.py`](app/whatsapp_agent/router.py)) |
+| `general_chat`, confidence ≥ 0.95 | Only the patient-identity lookups (`lookup_patient`, `register_patient`). JEV bound none, but this agent's prompt always identifies the patient first — with zero tools, gpt-oss on Groq returned empty replies or failed (found in the end-to-end agent check) |
+| Anything less confident | All 10 (the behaviour before the router) |
+
+Adapted for WhatsApp's multi-turn chats (JEV routed single questions):
+- **The router also sees the bot's previous message**, so a bare "١٠:٣٠" after "تحب الساعة كام؟" reads as booking.
+- **A follow-up never loses the previous turn's tools** — a conversation's scope can only widen, so a booking can't fail halfway.
+- **It replaces the extra Groq "route" call** on every new conversation (both "layers" in `llm.py` are the same model, so that call only cost tokens).
+
+**Measured** ([`scripts/benchmark_jev.py`](scripts/benchmark_jev.py), 100 labelled patient messages, mostly Egyptian Arabic, 10 of them follow-ups that only make sense with the bot's previous message):
+
+| | 8-bit (default) | bf16 (JEV's setup) |
+|---|---|---|
+| Label accuracy | 90% | 91% |
+| Follow-ups with context | 100% | 100% |
+| Confident picks that were right | 98.7% (79 picks) | 96.5% (86 picks) |
+| Fell back to all tools | 21% | 14% |
+| **Coverage** — the needed tool was bound | **100%** | **100%** |
+| Tool-schema tokens sent per message | **−59.7%** (511 vs 1,270) | −65.0% |
+| Router latency p50 / p95 | 612 / 790 ms | 380 / 478 ms |
+| GPU memory | **4.7 GB** | 8.0 GB |
+
+Booking is the hardest label (as in JEV): booking messages often look like availability or treatment questions, so most fall back to all tools — the safe outcome. Two safety rules came out of testing: `general_chat` needs ≥ 0.95 (real greetings scored ≥ 0.997; a question misread as small talk scored 0.84), and a listed-treatments route can also finish the booking. **Scope escalation:** a message with two intents ("اسمي نور وعايز احجز بكرة") can still be routed too narrowly; Groq then *rejects* the call, so the agent retries that step with all tools instead of failing — found and fixed in the end-to-end check.
+
+**Memory:** loaded in **8-bit** by default (`JEV_QUANTIZATION=8bit`, ~4.5 GB instead of ~8.4 GB) so it fits on the same 12 GB GPU as the speech model; it warms up in a background thread at startup. **Never a single point of failure:** if the package, GPU or model is unavailable, or a classification fails, the router logs it and the turn gets all tools. Turn it off with `WHATSAPP_AGENT_USE_JEV=0`. Every decision is traced to LangSmith as a `jev_router` run when tracing is enabled.
+
+---
+
 ## 🪝 Webhook Architecture
 
 This is the part of the system that changed most recently, and the part most worth understanding — the agent used to *poll* OpenWA every 10 seconds; it now receives a **push** the instant a message arrives.
@@ -369,11 +412,7 @@ On a GPU (tested on an RTX 5070 Ti Laptop, 12GB VRAM), steady-state inference is
 
 1. Ensure `HF_TOKEN` is set in `.env` (needed once, to download the source checkpoint for conversion — not needed afterward, since the converted checkpoint loads entirely from local disk).
 2. Run the conversion script above.
-3. For GPU acceleration, install a CUDA-matched `torch` build for your hardware (the plain `pyproject.toml` pin stays CPU-generic for portability) — e.g. for a Blackwell-generation GPU:
-   ```bash
-   uv pip install "torch==2.13.0+cu130" --index-url https://download.pytorch.org/whl/cu130
-   ```
-   Note this is a local venv override, not a lockfile change — a future `uv sync` will reinstall the CPU build, so re-run this after any `uv sync` on a GPU machine.
+3. GPU acceleration: `pyproject.toml` pins `torch` to the CUDA 13.0 build (`[tool.uv.index]` `pytorch-cu130`), so a plain `uv sync` installs it. (Before this, the lock held the CPU build and a `uv sync` silently replaced the GPU build — ~300x slower transcription.) On a machine with a different CUDA generation, change that index URL.
 
 ---
 
@@ -573,6 +612,7 @@ Clinic/
 | `WHATSAPP_WEBHOOK_SECRET` | HMAC key for verifying inbound webhook deliveries |
 | `WHATSAPP_AGENT_CONCURRENCY` | Max concurrent conversations processed at once (default 5) |
 | `BACKEND_PUBLIC_URL` | Where OpenWA should reach the backend (`http://host.docker.internal:8001` for the local Docker setup) |
+| `WHATSAPP_AGENT_USE_JEV` / `JEV_MODEL` / `JEV_QUANTIZATION` / `JEV_CONFIDENCE_THRESHOLD` / `JEV_GENERAL_CHAT_THRESHOLD` | Optional — the System 1 router: on by default, `Qwen/Qwen3.5-4B`, `8bit` (or `4bit` / `bf16`), `0.75`, `0.95` |
 | `SMTP_HOST` / `PORT` / `USER` / `PASSWORD`, `DOCTOR_EMAIL` | Optional — monthly report email; skipped silently if unset |
 
 > `DEEPSEEK_API_KEY`, `OPEN_ROUTER`, `HF_TOKEN`, `TWILIO_*`, `ngrok` also appear in `.env` from earlier experimentation with alternative LLM/voice providers not currently wired into the active code path — **confirm before relying on them**.
@@ -633,8 +673,16 @@ Open **http://localhost:5173**. Do **not** run the notebook's `run_polling_loop(
 | End-to-end booking flow | Real WhatsApp messages against a live OpenWA session | ✅ Verified manually |
 | Treatment workflow (consultation fee → voice plan → treatment booking → completion → payment → receipt) | Full live run against a real OpenWA session with a test patient, cleaned up after | ✅ Verified manually |
 | REST API (auth/doctor/secretary routers) | Manual HTTP testing during feature development | ✅ Exercised, not automated |
-| Automated unit / integration test suite (pytest, etc.) | — | ❌ **Not yet implemented** — flagged under [Future Improvements](#-limitations--future-improvements) |
+| System 1 router + the WhatsApp agent's routing, retry and sender-number logic | pytest, `tests/` against a throwaway local Postgres; WhatsApp, Groq and the router model faked | ✅ Automated |
+| System 1 router accuracy | `scripts/benchmark_jev.py` — see [System 1 Router](#-system-1-router-jev) | ✅ Measured |
+| Automated tests for the rest of the backend | — | ❌ **Not yet implemented** — flagged under [Future Improvements](#-limitations--future-improvements) |
 | Frontend component tests | — | ❌ **Not yet implemented** |
+
+Run the automated suite (`uv sync` installs `pytest`). It needs a local Postgres on port 5433 — e.g. `docker run -d --name clinic-test-db -e POSTGRES_PASSWORD=devpass -p 5433:5432 postgres:17` — creates and wipes a separate `clinic_test` database, and refuses to run against anything that isn't a local `*_test` database (override with `TEST_DATABASE_URL`):
+
+```bash
+.venv\Scripts\python.exe -m pytest tests
+```
 
 ---
 

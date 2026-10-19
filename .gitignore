@@ -41,3 +41,12 @@ node_modules/
 !.vscode/extensions.json
 .idea
 .DS_Store
+
+# Test cache
+.pytest_cache/
+
+# Local-only files that must never reach this public repo: database backups (real
+# patient data), private files (e.g. the InstaPay QR), downloaded evaluation audio
+backups/
+app/private/
+benchmarks/asr/
